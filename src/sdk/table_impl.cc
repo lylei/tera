@@ -329,7 +329,7 @@ void TableImpl::CommitScan(ScanTask* scan_task,
     request->set_table_name(_name);
     request->set_start(impl->GetStartRowKey());
     request->set_end(impl->GetEndRowKey());
-    request->set_snapshot_id(impl->GetSnapshot());
+    request->set_snapshot(impl->GetSnapshot());
     request->set_timeout(impl->GetPackInterval());
     if (impl->GetStartColumnFamily() != "") {
         request->set_start_family(impl->GetStartColumnFamily());

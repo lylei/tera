@@ -184,7 +184,7 @@ class DBImpl : public DB {
   std::deque<Writer*> writers_;
   WriteBatch* tmp_batch_;
 
-  std::multiset<uint64_t> snapshots_;
+  std::set<uint64_t> snapshots_;
   std::map<uint64_t, uint64_t> rollbacks_;
 
   // Set of table files to protect from deletion because they are

@@ -49,7 +49,7 @@ public:
         uint32_t max_size;
         int64_t ts_start;
         int64_t ts_end;
-        uint64_t snapshot_id;
+        uint64_t snapshot;
         FilterList filter_list;
         ColumnFamilyMap column_family_list;
         std::set<std::string> iter_cf_set;
@@ -57,7 +57,7 @@ public:
 
         ScanOptions()
             : max_versions(UINT32_MAX), max_size(UINT32_MAX),
-              ts_start(kOldestTs), ts_end(kLatestTs), snapshot_id(0), timeout(INT64_MAX / 2)
+              ts_start(kOldestTs), ts_end(kLatestTs), snapshot(0), timeout(INT64_MAX / 2)
         {}
     };
 
@@ -90,8 +90,8 @@ public:
     virtual bool Load(const TableSchema& schema,
                       const std::string& path,
                       const std::vector<uint64_t>& parent_tablets,
-                      std::map<uint64_t, uint64_t> snapshots,
-                      std::map<uint64_t, uint64_t> rollbacks,
+                      std::set<uint64_t>& snapshots,
+                      std::map<uint64_t, uint64_t>& rollbacks,
                       leveldb::Logger* logger = NULL,
                       leveldb::Cache* block_cache = NULL,
                       leveldb::TableCache* table_cache = NULL,
@@ -107,14 +107,12 @@ public:
 
     bool IsBusy();
 
-    bool SnapshotIDToSeq(uint64_t snapshot_id, uint64_t* snapshot_sequence);
-
     virtual bool Read(const leveldb::Slice& key, std::string* value,
-                      uint64_t snapshot_id = 0, StatusCode* status = NULL);
+                      uint64_t snapshot = 0, StatusCode* status = NULL);
 
     // read a row
     virtual bool ReadCells(const RowReaderInfo& row_reader, RowResult* value_list,
-                           uint64_t snapshot_id = 0, StatusCode* status = NULL);
+                           uint64_t snapshot = 0, StatusCode* status = NULL);
     /// scan from leveldb return ture means complete flase means not complete
     bool LowLevelScan(const std::string& start_tera_key,
                       const std::string& end_row_key,
@@ -147,10 +145,9 @@ public:
                           ScanTabletResponse* response,
                           google::protobuf::Closure* done);
 
-    uint64_t GetSnapshot(uint64_t id, uint64_t snapshot_sequence,
-                         StatusCode* status = NULL);
-    bool ReleaseSnapshot(uint64_t snapshot_id,  StatusCode* status = NULL);
-    void ListSnapshot(std::vector<uint64_t>* snapshot_id);
+    uint64_t GetSnapshot(uint64_t snapshot, StatusCode* status = NULL);
+    bool ReleaseSnapshot(uint64_t snapshot,  StatusCode* status = NULL);
+    void ListSnapshot(std::set<uint64_t>* snapshots);
 
     uint64_t Rollback(uint64_t snapshot_id, StatusCode* status);
 
@@ -236,7 +233,7 @@ private:
     bool m_mem_store_activated;
     TableSchema m_table_schema;
     bool m_kv_only;
-    std::map<uint64_t, uint64_t> id_to_snapshot_num_;
+    std::set<uint64_t> snapshots_;
     std::map<uint64_t, uint64_t> rollbacks_;
 
     const leveldb::RawKeyOperator* m_key_operator;

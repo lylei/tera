@@ -132,10 +132,10 @@ void TabletManager::GetAllTabletMeta(std::vector<TabletMeta*>* tablet_meta_list)
         tablet_meta->set_size(size);
         tablet_meta->set_compact_status(tablet_io->GetCompactStatus());
         tablet_meta_list->push_back(tablet_meta);
-        std::vector<uint64_t> snapshots;
+        std::set<uint64_t> snapshots;
         tablet_io->ListSnapshot(&snapshots);
-        for (uint32_t i = 0; i < snapshots.size(); ++i) {
-            tablet_meta->add_snapshot_list(snapshots[i]);
+        for (std::set<uint64_t>::iterator it = snapshots.begin(); it != snapshots.end(); ++it) {
+            tablet_meta->add_snapshot_list(*it);
         }
     }
 }

@@ -132,8 +132,8 @@ TabletIO::StatCounter& TabletIO::GetCounter() {
 bool TabletIO::Load(const TableSchema& schema,
                     const std::string& path,
                     const std::vector<uint64_t>& parent_tablets,
-                    std::map<uint64_t, uint64_t> snapshots,
-                    std::map<uint64_t, uint64_t> rollbacks,
+                    std::set<uint64_t>& snapshots,
+                    std::map<uint64_t, uint64_t>& rollbacks,
                     leveldb::Logger* logger,
                     leveldb::Cache* block_cache,
                     leveldb::TableCache* table_cache,
@@ -242,14 +242,15 @@ bool TabletIO::Load(const TableSchema& schema,
     m_tablet_path = path_prefix + path;
     LOG(INFO) << "[Load] Start Open " << m_tablet_path;
     // recover snapshot
-    for (std::map<uint64_t, uint64_t>::iterator it = snapshots.begin(); it != snapshots.end(); ++it) {
-        id_to_snapshot_num_[it->first] = it->second;
-        m_ldb_options.snapshots_sequence.push_back(it->second);
+    for (std::set<uint64_t>::iterator it = snapshots.begin(); it != snapshots.end(); ++it) {
+        snapshots_.insert(*it);
+        m_ldb_options.snapshots.insert(*it);
     }
+
     // recover rollback
     for (std::map<uint64_t, uint64_t>::iterator it = rollbacks.begin(); it != rollbacks.end(); ++it) {
-        rollbacks_[id_to_snapshot_num_[it->first]] = it->second;
-        m_ldb_options.rollbacks[id_to_snapshot_num_[it->first]] = it->second;
+        rollbacks_[it->first] = it->second;
+        m_ldb_options.rollbacks[it->first] = it->second;
     }
 
     leveldb::Status db_status = leveldb::DB::Open(m_ldb_options, m_tablet_path, &m_db);
@@ -495,15 +496,6 @@ bool TabletIO::IsBusy() {
     return is_busy;
 }
 
-bool TabletIO::SnapshotIDToSeq(uint64_t snapshot_id, uint64_t* snapshot_sequence) {
-    std::map<uint64_t, uint64_t>::iterator it = id_to_snapshot_num_.find(snapshot_id);
-    if (it == id_to_snapshot_num_.end()) {
-        return false;
-    }
-    *snapshot_sequence = it->second;
-    return true;
-}
-
 bool TabletIO::GetDataSize(uint64_t* size, std::vector<uint64_t>* lgsize,
                            StatusCode* status) {
     {
@@ -530,15 +522,16 @@ bool TabletIO::GetDataSize(uint64_t* size, std::vector<uint64_t>* lgsize,
 }
 
 bool TabletIO::Read(const leveldb::Slice& key, std::string* value,
-                    uint64_t snapshot_id, StatusCode* status) {
+                    uint64_t snapshot, StatusCode* status) {
     CHECK_NOTNULL(m_db);
     leveldb::ReadOptions read_option(&m_ldb_options);
     read_option.verify_checksums = FLAGS_tera_leveldb_verify_checksums;
-    if (snapshot_id != 0) {
-        if (!SnapshotIDToSeq(snapshot_id, &read_option.snapshot)) {
+    if (snapshot != 0) {
+        if (snapshots_.find(snapshot) == snapshots_.end()) {
             *status = kSnapshotNotExist;
             return false;
         }
+        read_option.snapshot = snapshot;
     }
     read_option.rollbacks = rollbacks_;
     leveldb::Status db_status = m_db->Get(read_option, key, value);
@@ -561,12 +554,13 @@ StatusCode TabletIO::InitedScanInterator(const std::string& start_tera_key,
     leveldb::ReadOptions read_option(&m_ldb_options);
     read_option.verify_checksums = FLAGS_tera_leveldb_verify_checksums;
     SetupIteratorOptions(scan_options, &read_option);
-    uint64_t snapshot_id = scan_options.snapshot_id;
-    if (snapshot_id != 0) {
-        if (!SnapshotIDToSeq(snapshot_id, &read_option.snapshot)) {
+    uint64_t snapshot = scan_options.snapshot;
+    if (snapshot != 0) {
+        if (snapshots_.find(snapshot) == snapshots_.end()) {
             TearDownIteratorOptions(&read_option);
             return kSnapshotNotExist;
         }
+        read_option.snapshot = snapshot;
     }
     read_option.rollbacks = rollbacks_;
     *scan_it = m_db->NewIterator(read_option);
@@ -796,13 +790,14 @@ bool TabletIO::LowLevelSeek(const std::string& row_key,
     leveldb::ReadOptions read_option(&m_ldb_options);
     read_option.verify_checksums = FLAGS_tera_leveldb_verify_checksums;
     SetupIteratorOptions(scan_options, &read_option);
-    uint64_t snapshot_id = scan_options.snapshot_id;
-    if (snapshot_id != 0) {
-        if (!SnapshotIDToSeq(snapshot_id, &read_option.snapshot)) {
+    uint64_t snapshot = scan_options.snapshot;
+    if (snapshot != 0) {
+        if (snapshots_.find(snapshot) == snapshots_.end()) {
             TearDownIteratorOptions(&read_option);
             SetStatusCode(kSnapshotNotExist, status);
             return false;
         }
+        read_option.snapshot = snapshot;
     }
     read_option.rollbacks = rollbacks_;
     leveldb::Iterator* it_data = m_db->NewIterator(read_option);
@@ -946,7 +941,7 @@ bool TabletIO::LowLevelSeek(const std::string& row_key,
 }
 
 bool TabletIO::ReadCells(const RowReaderInfo& row_reader, RowResult* value_list,
-                         uint64_t snapshot_id, StatusCode* status) {
+                         uint64_t snapshot, StatusCode* status) {
     {
         MutexLock lock(&m_mutex);
         if (m_status != kReady && m_status != kOnSplit
@@ -971,7 +966,7 @@ bool TabletIO::ReadCells(const RowReaderInfo& row_reader, RowResult* value_list,
         if (m_table_schema.raw_key() == TTLKv) {
             key.append(8, '\0');
         }
-        if (!Read(key, &value, snapshot_id, status)) {
+        if (!Read(key, &value, snapshot, status)) {
             m_counter.read_rows.Inc();
             row_read_delay.Add(get_micros() - read_ms);
             {
@@ -1021,7 +1016,7 @@ bool TabletIO::ReadCells(const RowReaderInfo& row_reader, RowResult* value_list,
         scan_options.ts_end = row_reader.time_range().ts_end();
     }
 
-    scan_options.snapshot_id = snapshot_id;
+    scan_options.snapshot = snapshot;
 
     VLOG(10) << "ReadCells: " << "key=[" << DebugString(row_reader.key()) << "]";
 
@@ -1142,7 +1137,7 @@ bool TabletIO::ScanRows(const ScanTabletRequest* request,
     bool success = false;
     if (m_kv_only) {
         ScanOption scan_option;
-        scan_option.set_snapshot_id(request->snapshot_id());
+        scan_option.set_snapshot(request->snapshot());
         scan_option.mutable_key_range()->set_key_start(request->start());
         scan_option.mutable_key_range()->set_key_end(request->end());
         if (request->has_buffer_limit()) {
@@ -1281,14 +1276,15 @@ bool TabletIO::Scan(const ScanOption& option, KeyValueList* kv_list,
     }
 
     int64_t pack_size = 0;
-    uint64_t snapshot_id = option.snapshot_id();
+    uint64_t snapshot = option.snapshot();
     leveldb::ReadOptions read_option(&m_ldb_options);
     read_option.verify_checksums = FLAGS_tera_leveldb_verify_checksums;
-    if (snapshot_id != 0) {
-        if (!SnapshotIDToSeq(snapshot_id, &read_option.snapshot)) {
+    if (snapshot != 0) {
+        if (snapshots_.find(snapshot) == snapshots_.end()) {
             *status = kSnapshotNotExist;
             return false;
         }
+        read_option.snapshot = snapshot;
     }
     read_option.rollbacks = rollbacks_;
     // TTL-KV : m_key_operator::Compare会解RawKey([row_key | expire_timestamp])
@@ -1415,7 +1411,7 @@ void TabletIO::SetupScanRowOptions(const ScanTabletRequest* request,
         scan_options->timeout = request->timeout();
     }
 
-    scan_options->snapshot_id = request->snapshot_id();
+    scan_options->snapshot = request->snapshot();
 }
 
 void TabletIO::SetupOptionsForLG() {
@@ -1691,8 +1687,7 @@ void TabletIO::ProcessRowBuffer(std::list<KeyValuePair>& row_buf,
     }
 }
 
-uint64_t TabletIO::GetSnapshot(uint64_t id, uint64_t snapshot_sequence,
-                               StatusCode* status) {
+uint64_t TabletIO::GetSnapshot(uint64_t snapshot, StatusCode* status) {
     {
         MutexLock lock(&m_mutex);
         if (m_status != kReady) {
@@ -1701,46 +1696,47 @@ uint64_t TabletIO::GetSnapshot(uint64_t id, uint64_t snapshot_sequence,
         }
         m_db_ref_count++;
     }
-    uint64_t snapshot = m_db->GetSnapshot(snapshot_sequence);
+    m_db->GetSnapshot(snapshot);
     MutexLock lock(&m_mutex);
-    id_to_snapshot_num_[id] = snapshot;
+    snapshots_.insert(snapshot);
     m_db_ref_count--;
     return snapshot;
 }
 
-bool TabletIO::ReleaseSnapshot(uint64_t snapshot_id, StatusCode* status) {
+bool TabletIO::ReleaseSnapshot(uint64_t snapshot, StatusCode* status) {
+    std::set<uint64_t>::iterator it;
     {
         MutexLock lock(&m_mutex);
         if (m_status != kReady) {
             SetStatusCode(m_status, status);
             return false;
         }
-        if (id_to_snapshot_num_.find(snapshot_id) == id_to_snapshot_num_.end()) {
+        it = snapshots_.find(snapshot);
+        if (it == snapshots_.end()) {
             SetStatusCode(kSnapshotNotExist, status);
             return false;
         }
         m_db_ref_count++;
     }
-    m_db->ReleaseSnapshot(id_to_snapshot_num_[snapshot_id]);
+    m_db->ReleaseSnapshot(*it);
     MutexLock lock(&m_mutex);
-    id_to_snapshot_num_.erase(snapshot_id);
+    snapshots_.erase(it);
     m_db_ref_count--;
     return true;
 }
 
-void TabletIO::ListSnapshot(std::vector<uint64_t>* snapshot_id) {
+void TabletIO::ListSnapshot(std::set<uint64_t>* snapshots) {
     MutexLock lock(&m_mutex);
     if (m_status != kReady) {
         return;
     }
-    for (std::map<uint64_t, uint64_t>::iterator it = id_to_snapshot_num_.begin();
-         it != id_to_snapshot_num_.end(); ++it) {
-        snapshot_id->push_back(it->first);
-        VLOG(7) << m_tablet_path << " ListSnapshot: " << it->first << " - " << it->second;
+    for (std::set<uint64_t>::iterator it = snapshots_.begin(); it != snapshots_.end(); ++it) {
+        snapshots->insert(*it);
+        VLOG(7) << m_tablet_path << " ListSnapshot: " << *it;
     }
 }
 
-uint64_t TabletIO::Rollback(uint64_t snapshot_id, StatusCode* status) {
+uint64_t TabletIO::Rollback(uint64_t snapshot, StatusCode* status) {
     uint64_t sequence;
     {
         MutexLock lock(&m_mutex);
@@ -1748,12 +1744,12 @@ uint64_t TabletIO::Rollback(uint64_t snapshot_id, StatusCode* status) {
             SetStatusCode(m_status, status);
             return false;
         }
-        std::map<uint64_t, uint64_t>::iterator it = id_to_snapshot_num_.find(snapshot_id);
-        if (it == id_to_snapshot_num_.end()) {
+        std::set<uint64_t>::iterator it = snapshots_.find(snapshot);
+        if (it == snapshots_.end()) {
             SetStatusCode(kSnapshotNotExist, status);
             return false;
         } else {
-            sequence = it->second;
+            sequence = *it;
         }
         m_db_ref_count++;
     }

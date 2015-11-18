@@ -212,7 +212,7 @@ struct Options {
   std::string key_start;
   std::string key_end;
 
-  std::vector<uint64_t> snapshots_sequence;
+  std::set<uint64_t> snapshots;
   std::map<uint64_t, uint64_t> rollbacks;
 
   std::set<uint32_t>* exist_lg_list;

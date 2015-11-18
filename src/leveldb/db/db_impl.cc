@@ -1393,7 +1393,7 @@ const uint64_t DBImpl::GetSnapshot(uint64_t last_sequence) {
 
 void DBImpl::ReleaseSnapshot(uint64_t sequence_number) {
   MutexLock l(&mutex_);
-  std::multiset<uint64_t>::iterator it = snapshots_.find(sequence_number);
+  std::set<uint64_t>::iterator it = snapshots_.find(sequence_number);
   assert(it != snapshots_.end());
   snapshots_.erase(it);
 }

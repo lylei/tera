@@ -77,7 +77,7 @@ public:
     // this handle will all observe a stable snapshot of the current DB
     // state.  The caller must call ReleaseSnapshot(result) when the
     // snapshot is no longer needed.
-    virtual const uint64_t GetSnapshot(uint64_t last_sequence = kMaxSequenceNumber);
+    virtual const uint64_t GetSnapshot(uint64_t snapshot = kMaxSequenceNumber);
 
     // Release a previously acquired snapshot.  The caller must not
     // use "snapshot" after this call.

@@ -12,26 +12,25 @@ message SnapshotRequest {
     optional uint64 sequence_id = 1;
     optional string table_name = 2;
     optional KeyRange key_range = 3;
-    optional uint64 snapshot_id = 4;
+    //optional uint64 snapshot_id = 4;
+    optional uint64 snapshot = 4;
 }
 
 message SnapshotResponse {
     optional uint64 sequence_id = 1;
     optional StatusCode status = 2;
-    optional uint64 snapshot_seq = 3;
 }
 
 message ReleaseSnapshotRequest {
     optional uint64 sequence_id = 1;
     optional string table_name = 2;
     optional KeyRange key_range = 3;
-    optional uint64 snapshot_id = 4;
+    optional uint64 snapshot = 4;
 }
 
 message ReleaseSnapshotResponse {
     optional uint64 sequence_id = 1;
     optional StatusCode status = 2;
-    optional uint64 snapshot_id = 3;
 }
 
 message SnapshotRollbackRequest {
@@ -63,12 +62,11 @@ message QueryResponse {
 message LoadTabletRequest {
     required uint64 sequence_id = 1;
     required string tablet_name = 2;
-    optional KeyRange key_range = 3; 
+    optional KeyRange key_range = 3;
     optional string path = 4;
     optional string session_id = 6;
     optional TableSchema schema = 8;
-    repeated uint64 snapshots_id = 9;
-    repeated uint64 snapshots_sequence = 10;
+    repeated uint64 snapshots = 9;
     repeated uint64 parent_tablets = 11;
     repeated Rollback rollbacks = 12;
 }
@@ -137,7 +135,7 @@ message RowMutationSequence {
 
 message WriteTabletRequest {
     optional uint64 sequence_id = 1;
-    required string tablet_name = 2;    
+    required string tablet_name = 2;
     //repeated KeyValuePair pair_list = 3;  // for compatible
     optional bool is_sync = 4 [default = false];
     optional bool is_instant = 5 [default = false];
@@ -215,7 +213,7 @@ message ResultCell {
 message ScanTabletRequest {
     optional uint64 sequence_id = 1;
     optional string table_name = 2;
-    //optional KeyRange key_range = 3; 
+    //optional KeyRange key_range = 3;
     optional uint32 max_version = 4;
     optional uint32 buffer_limit = 5 [default = 102400];
     optional bytes start = 6;
@@ -226,7 +224,7 @@ message ScanTabletRequest {
     repeated ColumnFamily cf_list = 11;
     optional FilterList filter_list = 12;
     optional TimeRange timerange = 13;
-    optional uint64 snapshot_id = 14;
+    optional uint64 snapshot = 14;
     optional bool round_down = 15;
     optional int64 session_id = 16;
     optional bool part_of_session = 17;
@@ -256,7 +254,7 @@ message RowReaderInfo {
 message ReadTabletRequest {
     optional uint64 sequence_id = 1;
     required string tablet_name = 2;
-    //repeated bytes key_list = 3; 
+    //repeated bytes key_list = 3;
     repeated RowReaderInfo row_info_list = 4;
     //repeated KeyValuePair key_values = 5;
     optional uint64 snapshot_id = 6;

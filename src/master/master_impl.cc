@@ -2418,14 +2418,10 @@ void MasterImpl::LoadTabletAsync(TabletPtr tablet, LoadClosure* done, uint64_t) 
     request->set_session_id(tablet->GetServerId());
 
     TablePtr table = tablet->GetTable();
-    std::vector<uint64_t> snapshot_id;
-    std::vector<uint64_t> snapshot_seq;
-    table->ListSnapshot(&snapshot_id);
-    tablet->ListSnapshot(&snapshot_seq);
-    assert(snapshot_id.size() == snapshot_seq.size());
-    for (uint32_t i = 0; i < snapshot_id.size(); ++i) {
-        request->add_snapshots_id(snapshot_id[i]);
-        request->add_snapshots_sequence(snapshot_seq[i]);
+    std::set<uint64_t> snapshots;
+    table->ListSnapshot(&snapshots);
+    for (std::set<uint64_t>::iterator it = snapshots.begin(); it != snapshots.end(); ++it) {
+        request->add_snapshots(*it);
     }
     std::vector<std::string> rollback_names;
     std::vector<Rollback> rollbacks;
@@ -2748,7 +2744,7 @@ void MasterImpl::DelSnapshot(const DelSnapshotRequest* request,
             return;
         }
     }
-    uint64_t snapshot = request->snapshot_id();
+    uint64_t snapshot = request->snapshot();
     int id = table->DelSnapshot(snapshot);
     if (id < 0) {
         LOG(WARNING) << "fail to delete snapshot: " << request->table_name()
@@ -2761,9 +2757,6 @@ void MasterImpl::DelSnapshot(const DelSnapshotRequest* request,
         return;
     }
 
-    for (uint32_t i = 0; i < tablets.size(); i++) {
-        tablets[i]->DelSnapshot(id);
-    }
     WriteClosure* closure =
         NewClosure(this, &MasterImpl::DelSnapshotCallback,
                 table, tablets,
@@ -2813,7 +2806,7 @@ void MasterImpl::DelSnapshotCallback(TablePtr table,
         return;
     } else {
         LOG(INFO) << "DelSnapshot " << rpc_request->table_name()
-            << ", write meta " << rpc_request->snapshot_id() << " done";
+            << ", write meta " << rpc_request->snapshot() << " done";
         rpc_response->set_status(kMasterOk);
         rpc_done->Run();
     }
@@ -2851,7 +2844,6 @@ void MasterImpl::GetSnapshot(const GetSnapshotRequest* request,
 
     assert(task->tablets.size());
 
-    task->snapshot_id.resize(task->tablets.size());
     task->request = request;
     task->response = response;
     task->done = done;
@@ -2860,7 +2852,7 @@ void MasterImpl::GetSnapshot(const GetSnapshotRequest* request,
     task->finish_num = 0;
     task->aborted = false;
     MutexLock lock(&task->mutex);
-    int64_t snapshot_id = get_micros();
+    int64_t snapshot = get_unique_micros(table->GetLastSnapshot());
     for (uint32_t i = 0; i < task->tablets.size(); ++i) {
         TabletPtr tablet = task->tablets[i];
         if (!tablet->SetStatusIf(kTabletOnSnapshot, kTableReady)) {
@@ -2873,7 +2865,7 @@ void MasterImpl::GetSnapshot(const GetSnapshotRequest* request,
         ++task->task_num;
         SnapshotClosure* closure =
             NewClosure(this, &MasterImpl::GetSnapshotCallback, static_cast<int32_t>(i), task);
-        GetSnapshotAsync(tablet, snapshot_id, 3000, closure);
+        GetSnapshotAsync(tablet, snapshot, 3000, closure);
     }
     if (task->task_num == 0) {
         LOG(WARNING) << "fail to create snapshot: " << request->table_name()
@@ -2884,7 +2876,7 @@ void MasterImpl::GetSnapshot(const GetSnapshotRequest* request,
     }
 }
 
-void MasterImpl::GetSnapshotAsync(TabletPtr tablet, int64_t snapshot_id, int32_t timeout,
+void MasterImpl::GetSnapshotAsync(TabletPtr tablet, int64_t snapshot, int32_t timeout,
                                   SnapshotClosure* done) {
 
     std::string addr = tablet->GetServerAddr();
@@ -2894,7 +2886,7 @@ void MasterImpl::GetSnapshotAsync(TabletPtr tablet, int64_t snapshot_id, int32_t
     SnapshotResponse* response = new SnapshotResponse;
     request->set_sequence_id(m_this_sequence_id.Inc());
     request->set_table_name(tablet->GetTableName());
-    request->set_snapshot_id(snapshot_id);
+    request->set_snapshot(snapshot);
     request->mutable_key_range()->set_key_start(tablet->GetKeyStart());
     request->mutable_key_range()->set_key_end(tablet->GetKeyEnd());
 
@@ -2911,11 +2903,10 @@ void MasterImpl::GetSnapshotCallback(int32_t tablet_id,
     task->mutex.Lock();
     ++task->finish_num;
     VLOG(6) << "MasterImpl GetSnapshot id= " << tablet_id
-        << " finish_num= " << task->finish_num
-        << ". Return " << master_response->snapshot_seq();
+        << " finish_num= " << task->finish_num;
     if (task->finish_num != task->task_num) {
         if (!failed && master_response->status() == kTabletNodeOk) {
-            task->snapshot_id[tablet_id] = master_response->snapshot_seq();
+            // ok
         } else {
             task->aborted = true;
         }
@@ -2932,14 +2923,9 @@ void MasterImpl::GetSnapshotCallback(int32_t tablet_id,
         task->response->set_status(kTabletNodeOffLine);
         task->done->Run();
     } else {
-        task->snapshot_id[tablet_id] = master_response->snapshot_seq();
         LOG(INFO) << "MasterImpl GetSnapshot all tablet done";
-        int sid = task->table->AddSnapshot(master_request->snapshot_id());
-        for (uint32_t i = 0; i < task->tablets.size(); ++i) {
-            int tsid = task->tablets[i]->AddSnapshot(task->snapshot_id[i]);
-            assert(sid == tsid);
-        }
-        task->response->set_snapshot_id(master_request->snapshot_id());
+        task->table->AddSnapshot(master_request->snapshot());
+        task->response->set_snapshot(master_request->snapshot());
         WriteClosure* closure =
             NewClosure(this, &MasterImpl::AddSnapshotCallback,
                     task->table, task->tablets,
@@ -2993,7 +2979,7 @@ void MasterImpl::AddSnapshotCallback(TablePtr table,
         return;
     }
     LOG(INFO) << "Snapshot " << rpc_request->table_name()
-        << ", write meta " << rpc_response->snapshot_id() << " done";
+        << ", write meta " << rpc_response->snapshot() << " done";
     rpc_response->set_status(kMasterOk);
     rpc_done->Run();
 }
@@ -3006,7 +2992,7 @@ void MasterImpl::ReleaseSnpashot(TabletPtr tablet, uint64_t snapshot) {
     ReleaseSnapshotResponse* response = new ReleaseSnapshotResponse;
     request->set_sequence_id(m_this_sequence_id.Inc());
     request->set_table_name(tablet->GetTableName());
-    request->set_snapshot_id(snapshot);
+    request->set_snapshot(snapshot);
     request->mutable_key_range()->set_key_start(tablet->GetKeyStart());
     request->mutable_key_range()->set_key_end(tablet->GetKeyEnd());
 
@@ -3183,7 +3169,7 @@ void MasterImpl::AddRollbackCallback(TablePtr table,
 }
 
 void MasterImpl::ClearUnusedSnapshots(TabletPtr tablet, const TabletMeta& meta) {
-    std::vector<uint64_t> snapshots;
+    std::set<uint64_t> snapshots;
     TablePtr table = tablet->GetTable();
     table->ListSnapshot(&snapshots);
 #if 0
@@ -3198,15 +3184,16 @@ void MasterImpl::ClearUnusedSnapshots(TabletPtr tablet, const TabletMeta& meta) 
         }
     }
 #endif
-    std::sort(snapshots.begin(), snapshots.end());
     size_t i = 0;
+    std::set<uint64_t>::iterator it = snapshots.begin();
     for (int j = 0; j < meta.snapshot_list_size(); ++j) {
         uint64_t seq = meta.snapshot_list(j);
-        if (i >= snapshots.size() || snapshots[i] != seq) {
+        if (i >= snapshots.size() || *it != seq) {
             ReleaseSnpashot(tablet, seq);
             continue;
         }
         ++i;
+        ++it;
     }
 }
 
@@ -3481,9 +3468,6 @@ void MasterImpl::SplitTabletAsync(TabletPtr tablet) {
     request->add_child_tablets(tablet->GetTable()->GetNextTabletNo());
 
     tablet->ToMeta(request->mutable_tablet_meta());
-    std::vector<uint64_t> snapshots;
-    tablet->GetTable()->ListSnapshot(&snapshots);
-    LOG(INFO) << "SplitTabletAsync snapshot num " << snapshots.size();
     Closure<void, SplitTabletRequest*, SplitTabletResponse*, bool, int>* done =
         NewClosure(this, &MasterImpl::SplitTabletCallback, tablet);
 

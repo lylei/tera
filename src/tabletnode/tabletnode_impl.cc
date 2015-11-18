@@ -230,11 +230,10 @@ void TabletNodeImpl::LoadTablet(const LoadTabletRequest* request,
     const std::string& key_end = request->key_range().key_end();
     const TableSchema& schema = request->schema();
     // to recover snapshots
-    assert(request->snapshots_id_size() == request->snapshots_sequence_size());
-    std::map<uint64_t, uint64_t> snapshots;
-    int32_t num_of_snapshots = request->snapshots_id_size();
+    std::set<uint64_t> snapshots;
+    int32_t num_of_snapshots = request->snapshots_size();
     for (int32_t i = 0; i < num_of_snapshots; ++i) {
-        snapshots[request->snapshots_id(i)] = request->snapshots_sequence(i);
+        snapshots.insert(request->snapshots(i));
     }
 
     // to recover rollbacks
@@ -543,7 +542,7 @@ void TabletNodeImpl::GetSnapshot(const SnapshotRequest* request,
         done->Run();
         return;
     }
-    uint64_t snapshot = tablet_io->GetSnapshot(request->snapshot_id(), (0x1ull << 56) - 1, &status);
+    uint64_t snapshot = tablet_io->GetSnapshot(request->snapshot(), &status);
     if (status != kTabletNodeOk) {
         response->set_status(status);
     } else if (snapshot == 0) {
@@ -554,7 +553,6 @@ void TabletNodeImpl::GetSnapshot(const SnapshotRequest* request,
     } else {
         response->set_sequence_id(request->sequence_id());
         response->set_status(kTabletNodeOk);
-        response->set_snapshot_seq(snapshot);
         LOG(INFO) << "get snapshot: " << snapshot
             << ", tablet: " << tablet_io->GetTablePath()
             << " [" << DebugString(tablet_io->GetStartKey())
@@ -582,22 +580,21 @@ void TabletNodeImpl::ReleaseSnapshot(const ReleaseSnapshotRequest* request,
         return;
     }
     response->set_sequence_id(request->sequence_id());
-    if (tablet_io->ReleaseSnapshot(request->snapshot_id(), &status)) {
+    if (tablet_io->ReleaseSnapshot(request->snapshot(), &status)) {
         response->set_status(kTabletNodeOk);
-        LOG(INFO) << "released snapshot: " << request->snapshot_id()
+        LOG(INFO) << "released snapshot: " << request->snapshot()
             << ", tablet: " << tablet_io->GetTablePath()
             << " [" << DebugString(tablet_io->GetStartKey())
             << ", " << DebugString(tablet_io->GetEndKey()) << "]";
     } else {
         response->set_status(status);
-        LOG(ERROR) << "release snapshot fail: " << request->snapshot_id()
+        LOG(ERROR) << "release snapshot fail: " << request->snapshot()
                 << ", tablet: " << tablet_io->GetTablePath()
                 << " [" << DebugString(tablet_io->GetStartKey())
                 << ", " << DebugString(tablet_io->GetEndKey())
                 << "], status: " << StatusCodeToString(status);
     }
     tablet_io->DecRef();
-    response->set_snapshot_id(request->snapshot_id());
     done->Run();
 }
 

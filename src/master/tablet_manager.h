@@ -103,9 +103,6 @@ public:
     void SetExpectServerAddr(const std::string& server_addr);
     TableStatus GetTableStatus();
 
-    int32_t AddSnapshot(uint64_t snapshot);
-    void ListSnapshot(std::vector<uint64_t>* snapshot);
-    void DelSnapshot(int32_t id);
     int32_t AddRollback(std::string name, uint64_t snapshot_id, uint64_t rollback_point);
     void ListRollback(std::vector<Rollback>* rollbacks);
 
@@ -174,7 +171,8 @@ public:
     void SetSchema(const TableSchema& schema);
     int32_t AddSnapshot(uint64_t snapshot);
     int32_t DelSnapshot(uint64_t snapshot);
-    void ListSnapshot(std::vector<uint64_t>* snapshots);
+    void ListSnapshot(std::set<uint64_t>* snapshots);
+    uint64_t GetLastSnapshot();
     int32_t AddRollback(std::string rollback_name);
     void ListRollback(std::vector<std::string>* rollback_names);
     void AddDeleteTabletCount();
@@ -194,7 +192,7 @@ private:
     mutable Mutex m_mutex;
     std::string m_name;
     TableSchema m_schema;
-    std::vector<uint64_t> m_snapshot_list;
+    std::set<uint64_t> m_snapshot_list;
     std::vector<std::string> m_rollback_names;
     TableStatus m_status;
     uint32_t m_deleted_tablet_num;

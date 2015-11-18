@@ -776,7 +776,7 @@ bool ClientImpl::GetSnapshot(const string& name, uint64_t* snapshot, ErrorCode* 
     if (master_client.GetSnapshot(&request, &response)) {
         if (response.status() == kMasterOk) {
             std::cout << name << " get snapshot successfully" << std::endl;
-            *snapshot = response.snapshot_id();
+            *snapshot = response.snapshot();
             return true;
         }
     }
@@ -797,7 +797,7 @@ bool ClientImpl::DelSnapshot(const string& name, uint64_t snapshot, ErrorCode* e
     DelSnapshotResponse response;
     request.set_sequence_id(0);
     request.set_table_name(internal_table_name);
-    request.set_snapshot_id(snapshot);
+    request.set_snapshot(snapshot);
 
     if (master_client.DelSnapshot(&request, &response)) {
         if (response.status() == kMasterOk) {

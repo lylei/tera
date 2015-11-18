@@ -217,7 +217,7 @@ Status DBTable::Init() {
     MutexLock lock(&mutex_);
 
     uint64_t min_log_sequence = kMaxSequenceNumber;
-    std::vector<uint64_t> snapshot_sequence = options_.snapshots_sequence;
+    std::set<uint64_t> snapshot_sequence = options_.snapshots;
     std::map<uint64_t, uint64_t> rollbacks = options_.rollbacks;
     for (std::set<uint32_t>::iterator it = options_.exist_lg_list->begin();
          it != options_.exist_lg_list->end() && s.ok(); ++it) {
@@ -226,8 +226,9 @@ Status DBTable::Init() {
                                   dbname_ + "/" + Uint64ToString(i));
         lg_list_.push_back(impl);
         lg_edits.push_back(new VersionEdit);
-        for (uint32_t i = 0; i < snapshot_sequence.size(); ++i) {
-            impl->GetSnapshot(snapshot_sequence[i]);
+        for (std::set<uint64_t>::iterator it = snapshot_sequence.begin();
+             it != snapshot_sequence.end(); ++it) {
+            impl->GetSnapshot(*it);
         }
         std::map<uint64_t, uint64_t>::iterator rollback_it = rollbacks.begin();
         for (; rollback_it != rollbacks.end(); ++rollback_it) {
@@ -647,14 +648,14 @@ Iterator* DBTable::NewIterator(const ReadOptions& options) {
     return NewMergingIterator(options_.comparator, &list[0], list.size());
 }
 
-const uint64_t DBTable::GetSnapshot(uint64_t last_sequence) {
+const uint64_t DBTable::GetSnapshot(uint64_t snapshot) {
     MutexLock lock(&mutex_);
     std::set<uint32_t>::iterator it = options_.exist_lg_list->begin();
-    uint64_t seq = last_sequence == kMaxSequenceNumber ? last_sequence_ : last_sequence;
+    uint64_t seq = snapshot == kMaxSequenceNumber ? last_sequence_ : snapshot;
     for (; it != options_.exist_lg_list->end(); ++it) {
         lg_list_[*it]->GetSnapshot(seq);
     }
-    return seq;
+    return snapshot;
 }
 
 void DBTable::ReleaseSnapshot(uint64_t sequence_number) {
