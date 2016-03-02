@@ -50,8 +50,8 @@ std::string StatusCodeToString(int32_t status) {
         return "kTabletNodeWaitKick";
 
     // table status
-    case kTableOk:
-        return "kTableOk";
+    case kTabletNodeOk:
+        return "kTabletNodeOk";
 
     case kTableNotFound:
         return "kTableNotFound";
