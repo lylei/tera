@@ -67,6 +67,18 @@ message UpdateTableResponse {
     required uint64 sequence_id = 2;
 }
 
+message UpdateCheckRequest {
+    optional uint64 sequence_id = 1;
+    optional string table_name = 2;
+    optional bytes user_token = 3;
+}
+
+message UpdateCheckResponse {
+    optional uint64 sequence_id = 1;
+    optional StatusCode status = 2;
+    optional bool done = 3;
+}
+
 message CompactTableRequest {
     required uint64 sequence_id = 1;
 }
@@ -98,6 +110,8 @@ message ShowTablesRequest {
     optional uint32 max_table_num = 4;
     optional uint32 max_tablet_num = 5;
     optional bytes user_token = 6;
+
+    optional bool all_brief = 7;
 }
 
 message ShowTablesResponse {
@@ -106,6 +120,8 @@ message ShowTablesResponse {
     optional TabletMetaList tablet_meta_list = 3;
     optional TableMetaList table_meta_list = 4;
     optional bool is_more = 5;
+
+    optional bool all_brief = 7;
 }
 
 message ShowTabletNodesRequest {
@@ -244,6 +260,7 @@ service MasterServer {
     rpc DisableTable(DisableTableRequest) returns (DisableTableResponse);
     rpc EnableTable(EnableTableRequest) returns (EnableTableResponse);
     rpc UpdateTable(UpdateTableRequest) returns (UpdateTableResponse);
+    rpc UpdateCheck(UpdateCheckRequest) returns (UpdateCheckResponse);
     rpc CompactTable(CompactTableRequest) returns (CompactTableResponse);
     rpc SearchTable(SearchTableRequest) returns(SearchTableResponse);
 

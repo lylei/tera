@@ -443,10 +443,14 @@ bool DBImpl::IsDbExist() {
 Status DBImpl::Recover(VersionEdit* edit) {
   mutex_.AssertHeld();
 
-  // Ignore error from CreateDir since the creation of the DB is
-  // committed only when the descriptor is created, and this directory
-  // may already exist from a previous failed creation attempt.
-  env_->CreateDir(dbname_);
+  if (!env_->FileExists(dbname_)) {
+    Status s = env_->CreateDir(dbname_);
+    if (!s.ok()) {
+      Log(options_.info_log, "[%s] fail to create db: %s",
+          dbname_.c_str(), s.ToString().c_str());
+      return s;
+    }
+  }
   assert(db_lock_ == NULL);
   Status s = env_->LockFile(LockFileName(dbname_), &db_lock_);
   if (!s.ok()) {
@@ -487,8 +491,7 @@ Status DBImpl::Recover(VersionEdit* edit) {
       std::string path = RealDbName(dbname_, *it_tablet);
       Log(options_.info_log, "[%s] GetChildren(%s)", dbname_.c_str(), path.c_str());
       std::vector<std::string> filenames;
-      s = env_->GetChildren(path, &filenames);
-      if (!s.ok()) {
+      if (!env_->GetChildren(path, &filenames).ok()) {
         Log(options_.info_log, "[%s] GetChildren(%s) fail: %s",
             dbname_.c_str(), path.c_str(), s.ToString().c_str());
         continue;
@@ -610,7 +613,7 @@ Status DBImpl::CompactMemTable() {
   return s;
 }
 
-void DBImpl::CompactRange(const Slice* begin, const Slice* end) {
+void DBImpl::CompactRange(const Slice* begin, const Slice* end, int lg_no) {
   int max_level_with_files = 1;
   {
     MutexLock l(&mutex_);
@@ -650,15 +653,17 @@ void DBImpl::TEST_CompactRange(int level, const Slice* begin,const Slice* end) {
   }
 
   MutexLock l(&mutex_);
-  while (!manual.done) {
-    while (manual_compaction_ != NULL) {
-      bg_cv_.Wait();
+  while (!manual.done && !shutting_down_.Acquire_Load() && bg_error_.ok()) {
+    if (manual_compaction_ == NULL) { // Idle
+        manual_compaction_ = &manual;
+        MaybeScheduleCompaction();
+    } else { // Running either my compaction or another compaction.
+        bg_cv_.Wait();
     }
-    manual_compaction_ = &manual;
-    MaybeScheduleCompaction();
-    while (manual_compaction_ == &manual) {
-      bg_cv_.Wait();
-    }
+  }
+  if (manual_compaction_ == &manual) {
+    // Cancel my manual compaction since we aborted early for some reason.
+    manual_compaction_ = NULL;
   }
 }
 
@@ -683,16 +688,15 @@ Status DBImpl::TEST_CompactMemTable() {
 
 // tera-specific
 
-bool DBImpl::FindSplitKey(const std::string& start_key,
-                          const std::string& end_key,
-                          double ratio,
-                          std::string* split_key) {
-    Slice start_slice(start_key);
-    Slice end_slice(end_key);
+bool DBImpl::FindSplitKey(double ratio, std::string* split_key) {
     MutexLock l(&mutex_);
-    return versions_->current()->FindSplitKey(start_key.empty()?NULL:&start_slice,
-                                              end_key.empty()?NULL:&end_slice,
-                                              ratio, split_key);
+    return versions_->current()->FindSplitKey(ratio, split_key);
+}
+
+bool DBImpl::FindKeyRange(std::string* smallest_key,
+                          std::string* largest_key) {
+    MutexLock l(&mutex_);
+    return versions_->current()->FindKeyRange(smallest_key, largest_key);
 }
 
 bool DBImpl::MinorCompact() {
@@ -1387,15 +1391,52 @@ Iterator* DBImpl::NewIterator(const ReadOptions& options) {
 
 const uint64_t DBImpl::GetSnapshot(uint64_t last_sequence) {
   MutexLock l(&mutex_);
+  if (options_.use_memtable_on_leveldb) {
+    if (mem_) {
+      ((MemTableOnLevelDB*)mem_)->GetSnapshot(last_sequence);
+    }
+    if (imm_) {
+      ((MemTableOnLevelDB*)imm_)->GetSnapshot(last_sequence);
+    }
+  }
   snapshots_.insert(last_sequence);
+  // Log(options_.info_log,
+  //     "[%s] get snapshot: %llu,  size %llu", dbname_.c_str(),
+  //     (unsigned long long)last_sequence,
+  //     (unsigned long long)snapshots_.size());
   return last_sequence;
+}
+
+void DBImpl::TryReleaseSnapshot(uint64_t sequence_number) {
+  // In mem compaction, may release a snapshot which is not exist.
+
+  //Log(options_.info_log,
+  //    "[%s] release snapshot: %llu,  size %llu", dbname_.c_str(),
+  //    (unsigned long long)sequence_number,
+  //    (unsigned long long)snapshots_.size());
+  std::multiset<uint64_t>::iterator it = snapshots_.find(sequence_number);
+  if (it != snapshots_.end()) {
+    snapshots_.erase(it);
+  }
 }
 
 void DBImpl::ReleaseSnapshot(uint64_t sequence_number) {
   MutexLock l(&mutex_);
-  std::set<uint64_t>::iterator it = snapshots_.find(sequence_number);
+  if (options_.use_memtable_on_leveldb) {
+    if (mem_) {
+      ((MemTableOnLevelDB*)mem_)->TryReleaseSnapshot(sequence_number);
+    }
+    if (imm_) {
+      ((MemTableOnLevelDB*)imm_)->TryReleaseSnapshot(sequence_number);
+    }
+  }
+  std::multiset<uint64_t>::iterator it = snapshots_.find(sequence_number);
   assert(it != snapshots_.end());
   snapshots_.erase(it);
+  //Log(options_.info_log,
+  //    "[%s] release snapshot: %llu,  size %llu", dbname_.c_str(),
+  //    (unsigned long long)sequence_number,
+  //    (unsigned long long)snapshots_.size());
 }
 
 const uint64_t DBImpl::Rollback(uint64_t snapshot_seq, uint64_t rollback_point) {
@@ -1417,6 +1458,16 @@ Status DBImpl::Delete(const WriteOptions& options, const Slice& key) {
 bool DBImpl::BusyWrite() {
   MutexLock l(&mutex_);
   return (versions_->NumLevelFiles(0) >= options_.l0_slowdown_writes_trigger);
+}
+
+void DBImpl::Workload(double* write_workload) {
+  MutexLock l(&mutex_);
+  double wwl = versions_->CompactionScore();
+  if (wwl >= 0) {
+    *write_workload = wwl;
+  } else {
+    *write_workload = 0;
+  }
 }
 
 Status DBImpl::Write(const WriteOptions& options, WriteBatch* my_batch) {
@@ -1731,10 +1782,13 @@ MemTable* DBImpl::NewMemTable() const {
         return new MemTable(internal_comparator_,
                   options_.enable_strategy_when_get ? options_.compact_strategy_factory : NULL);
     } else {
+        Logger* info_log = NULL;
+        // Logger* info_log = options_.info_log;
         return new MemTableOnLevelDB(internal_comparator_,
                                      options_.compact_strategy_factory,
                                      options_.memtable_ldb_write_buffer_size,
-                                     options_.memtable_ldb_block_size);
+                                     options_.memtable_ldb_block_size,
+                                     info_log);
     }
 }
 
