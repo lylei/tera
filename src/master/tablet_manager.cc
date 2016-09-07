@@ -1208,6 +1208,10 @@ bool TabletManager::DeleteTablet(const std::string& table_name,
         }
         // delete &table;
         m_all_tables.erase(it);
+    } else {
+        for (Table::TabletList::iterator i = table.m_tablets_list.begin(); i != table.m_tablets_list.end(); ++i) {
+            LOG(INFO) << "DeleteTablet DEBUG: still has tablet " << i->second;
+        }
     }
     return true;
 }

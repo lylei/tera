@@ -1736,11 +1736,11 @@ void MasterImpl::LoadBalance() {
 
             std::vector<TabletPtr> tablet_list;
             table->GetTablet(&tablet_list);
-            max_move_num -= LoadBalance(m_size_scheduler.get(), max_move_num, 3,
+            max_move_num -= LoadBalance(m_size_scheduler.get(), max_move_num, 1,
                                         all_node_list, tablet_list, table->GetTableName());
         }
     } else {
-        max_move_num -= LoadBalance(m_size_scheduler.get(), max_move_num, 3,
+        max_move_num -= LoadBalance(m_size_scheduler.get(), max_move_num, 1,
                                     all_node_list, all_tablet_list);
     }
 }
